@@ -1,0 +1,136 @@
+---
+title: "Lab 5"
+author: "Brett White"
+output: html_document
+---
+
+```{r load}
+acc <- read.csv('https://raw.githubusercontent.com/xdaiISU/ds202materials/master/hwlabs/fars2017/accident.csv', stringsAsFactors=FALSE)
+per <- read.csv('https://raw.githubusercontent.com/xdaiISU/ds202materials/master/hwlabs/fars2017/person.csv')
+library(tidyverse)
+library(lubridate)
+```
+
+1.
+    ```{r, dependson="load"}
+    acc %>%
+      mutate(DAY_WEEK=wday(DAY_WEEK, label=TRUE)) %>%
+      group_by(DAY_WEEK) %>%
+      summarize(total=n())
+    ```
+
+    Friday, Saturday, and Sunday (the weekend) appear to have more accidents than Monday through Thursday.
+
+2.
+    ```{r severe, dependson="load"}
+    fatal <- per %>%
+      filter(INJ_SEV == 4)
+    ```
+
+3.
+    ```{r danger, dependson=c("load","severe")}
+    mostDangerousMakes <- fatal %>%
+      filter(!is.na(MAKE)) %>%
+      group_by(STATE, MAKE) %>%
+      summarize(n = n()) %>%
+      group_by(STATE) %>%
+      filter(n == max(n))
+    ```
+
+4.
+    ```{r, dependson=c("load","severe","danger")}
+    states <- map_data('state')
+    glcs <- readxl::read_xlsx('FRPP_GLC_-_United_StatesSep292020.xlsx') %>%
+      mutate(`State Code`=as.integer(`State Code`)) %>%
+      mutate(`County Code`=as.integer(`County Code`))
+    make_labels <- glcs %>%
+      distinct(`State Name`, `State Code`) %>%
+      inner_join(mostDangerousMakes, by=c('State Code'='STATE')) %>%
+      mutate(`State Name`=tolower(`State Name`)) %>%
+      inner_join(states %>% group_by(region) %>% summarize(lat=(min(lat)+max(lat))/2,long=(min(long)+max(long))/2), by=c('State Name'='region')) %>%
+      inner_join(read.csv('makes.csv'))
+    ggplot(states, aes(x=long,y=lat,group=group)) + geom_path() + geom_text(data=make_labels, aes(x=long,y=lat,label=Model,group=NULL,label.size=0.2)) + coord_map() + ggtitle('Most Dangerous Make by State') + theme_void()
+    ```
+
+    The most dangerous make (i.e. the make that was involved with the most accidents in each state for the most number of states) is Chevrolet. Over half of the states had Chevrolet as the most dangerous make. This makes sense because Cherovlet is an American company and thus more Americans drive Chevrolets, and so with more Chevrolets on the road there are more accidents involving Chevrolet.
+
+5.
+    ```{r join, dependson="load"}
+    data <- acc %>%
+      inner_join(per, by=c("STATE", "ST_CASE", "VE_FORMS", "COUNTY", "DAY", "MONTH", "HOUR", "MINUTE", "RUR_URB", "FUNC_SYS", "HARM_EV", "MAN_COLL", "SCH_BUS"))
+    ```
+
+6.
+    ```{r, dependson=c("load","join")}
+    data %>%
+      mutate(SEX=ifelse(SEX==1,'Male',ifelse(SEX==2,'Female','Unknown'))) %>%
+      mutate(DAY_WEEK=wday(DAY_WEEK, label=TRUE)) %>%
+      filter(HOUR <= 24) %>%
+      group_by(DAY_WEEK, HOUR, SEX) %>%
+      summarize(n=n()) %>%
+      distinct(DAY_WEEK, HOUR, SEX, n) %>%
+      ggplot(aes(x=HOUR,weight=n,fill=SEX)) + geom_bar(position='dodge') + facet_wrap(~DAY_WEEK) + ggtitle('Accidents by Day of Week, Hour, and Sex') + xlab('Hour of Day') + ylab('Number of Accidents')
+    ```
+
+    Based on the barcharts, males tend to be involved in more accidents than females. This makes sense since more males drive than females. Most accidents occur in the morning or in the evening but not so much in the afternoon. This makes sense because there is usually more traffic at these time when people are going to or coming from work. More accidents occur on the weekend than during the week. This makes sense because usually people travel more on the weekend when they don't have work or school. There are a lot of accidents on Friday and Saturday night. This makes sense because people tend to go out later when they don't have work or school the next day.
+
+7.
+    ```{r, dependson="load"}
+    acc %>%
+      inner_join(glcs, by=c('STATE'='State Code','COUNTY'='County Code')) %>%
+      mutate(COUNTY=tolower(`County Name`),STATE=tolower(`State Name`)) %>%
+      group_by(COUNTY, STATE) %>%
+      summarize(deaths=sum(FATALS)) %>%
+      right_join(map_data('county'), by=c('COUNTY'='subregion','STATE'='region')) %>%
+      mutate(deaths=ifelse(is.na(deaths),0,deaths)) %>%
+      ggplot(aes(x=long,y=lat,fill=deaths,group=group)) + geom_polygon() + coord_map() + ggtitle('Deaths from Accidents by County') + theme_void()
+    ```
+
+    Based on the map, counties in southern California and southwestern Arizona tend to have the most deaths from accidents. This makes sense because these counties have large populations and tend to be very popular with tourists, and so there are more cars on the roads and a lot more drivers from different backgrounds.
+
+8.
+    ```{r, dependson="load"}
+    summer <- acc %>%
+      filter(MONTH > 3 & MONTH < 12)
+    nrow(summer)
+    sum(summer$FATALS)
+    winter <- acc %>%
+      filter(MONTH <= 3 | MONTH == 12)
+    nrow(winter)
+    sum(winter$FATALS)
+    summer_states <- summer %>%
+      group_by(STATE) %>%
+      summarize(accidents=n(),deaths=sum(FATALS)) %>%
+      inner_join(glcs, by=c('STATE'='State Code')) %>%
+      distinct(`State Name`, accidents, deaths) %>%
+      select(`State Name`, accidents, deaths)
+    winter_states <- winter %>%
+      group_by(STATE) %>%
+      summarize(accidents=n(),deaths=sum(FATALS)) %>%
+      inner_join(glcs, by=c('STATE'='State Code')) %>%
+      distinct(`State Name`, accidents, deaths) %>%
+      select(`State Name`, accidents, deaths)
+    comp <- summer_states %>%
+      inner_join(winter_states, by='State Name') %>%
+      mutate(
+        summer_accidents=accidents.x,
+        summer_deaths=deaths.x,
+        winter_accidents=accidents.y,
+        winter_deaths=deaths.y
+      ) %>%
+      select(`State Name`, summer_accidents, summer_deaths, winter_accidents, winter_deaths)
+    comp %>%
+      mutate(`State Name`=tolower(`State Name`),`More Dangerous`=ifelse(summer_accidents>winter_accidents,'Summer','Winter')) %>%
+      inner_join(map_data('state'), by=c('State Name'='region')) %>%
+      ggplot(aes(x=long,y=lat,fill=`More Dangerous`,group=group)) + geom_polygon() + coord_map() + ggtitle('More Dangerous Season Based on Number of Accidents by State') + theme_void()
+    comp %>%
+      mutate(`State Name`=tolower(`State Name`),`More Dangerous`=ifelse(summer_deaths>winter_deaths,'Summer','Winter')) %>%
+      inner_join(map_data('state'), by=c('State Name'='region')) %>%
+      ggplot(aes(x=long,y=lat,fill=`More Dangerous`,group=group)) + geom_polygon() + coord_map() + ggtitle('More Dangerous Season Based on Number of Deaths by State') + theme_void()
+    comp %>%
+      mutate(`State Name`=tolower(`State Name`),`More Dangerous`=factor(ifelse(summer_deaths/summer_accidents>winter_deaths/winter_accidents,'Summer','Winter'),levels=c('Summer','Winter'))) %>%
+      inner_join(map_data('state'), by=c('State Name'='region')) %>%
+      ggplot(aes(x=long,y=lat,fill=`More Dangerous`,group=group)) + geom_polygon() + coord_map() + ggtitle('More Dangerous Season Based on Rate of Deaths per Accident by State') + theme_void()
+    ```
+
+Based strictly on the number of reported accidents and deaths, summer is more dangerous than winter in all states. Based on the rate of deaths per accident, half of the states show summer as being more dangerous and the other half show winter as being more dangerous. It makes sense that there are more accidents in the summer when more people are driving around (especially high schoolers with new licenses and no school). It makes sense that people are more likely to die in accidents in the winter since winter tends to lead to more unpredictable scenarios.
